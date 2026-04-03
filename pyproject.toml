@@ -1,0 +1,36 @@
+[project]
+name = "amplifier-recipe-dashboard"
+version = "0.1.0"
+description = "Live recipe progress dashboard for Amplifier"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Samuel Lee" }]
+dependencies = [
+    "flask>=3.0",
+    "waitress>=3.0",
+    "click>=8.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+amplifier-recipe-dashboard = "amplifier_recipe_dashboard.cli:main"
+
+[project.urls]
+Repository = "https://github.com/samueljklee/amplifier-recipe-dashboard"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["amplifier_recipe_dashboard"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pyright]
+pythonVersion = "3.11"

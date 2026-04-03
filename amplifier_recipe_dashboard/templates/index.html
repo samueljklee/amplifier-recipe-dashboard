@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark light">
+    <title>Recipe Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/lib/viz-standalone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+</head>
+<body>
+    <header>
+        <h1>Recipe Dashboard</h1>
+        <span id="status-indicator" class="status-dot"></span>
+        <span id="last-updated"></span>
+        <select id="project-select" onchange="dashboard.setProjectFilter(this.value)">
+            <option value="">All projects</option>
+        </select>
+        <select id="time-select" onchange="dashboard.setTimeFilter(this.value)">
+            <option value="">All time</option>
+            <option value="1d">Today</option>
+            <option value="3d">Last 3 days</option>
+            <option value="7d" selected>Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+        </select>
+        <button id="refresh-btn" onclick="dashboard.refresh()">Refresh</button>
+    </header>
+    <main id="app"></main>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
