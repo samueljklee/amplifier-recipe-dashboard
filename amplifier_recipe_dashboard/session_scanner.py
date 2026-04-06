@@ -62,6 +62,8 @@ class RecipeSession:
     pending_approval_prompt: str = ""
     approval_history: list = field(default_factory=list)
     stage_approvals: dict = field(default_factory=dict)
+    parent_session_id: str = ""
+    child_session_ids: list[str] = field(default_factory=list)
 
     @property
     def plan_path(self) -> str | None:
@@ -224,6 +226,13 @@ def load_session(session_dir: Path, project_slug: str) -> RecipeSession | None:
     approval_hist = state.get("approval_history", [])
     stage_apprvls = state.get("stage_approvals", {})
 
+    # Read parent_session_id from multiple possible locations (fallback chain)
+    parent_sid = (
+        state.get("parent_session_id")  # new canonical top-level field
+        or state.get("context", {}).get("parent_session_id")  # legacy context-level
+        or ""
+    )
+
     session = RecipeSession(
         session_id=state.get("session_id", session_dir.name),
         recipe_name=state.get("recipe_name", "unknown"),
@@ -245,9 +254,53 @@ def load_session(session_dir: Path, project_slug: str) -> RecipeSession | None:
         pending_approval_prompt=str(pending_prompt) if pending_prompt else "",
         approval_history=approval_hist if isinstance(approval_hist, list) else [],
         stage_approvals=stage_apprvls if isinstance(stage_apprvls, dict) else {},
+        parent_session_id=str(parent_sid) if parent_sid else "",
     )
     session.status = classify_status(session)
     return session
+
+
+def _link_parent_child(sessions: list[RecipeSession]) -> None:
+    """Build parent→child links and propagate status up the tree.
+
+    After this, each parent session's child_session_ids is populated,
+    and a parent whose own state.json is stale but has running/waiting
+    children will be reclassified as 'running' instead of 'stalled'.
+    """
+    by_id: dict[str, RecipeSession] = {s.session_id: s for s in sessions}
+
+    # Build child lists
+    for s in sessions:
+        if s.parent_session_id and s.parent_session_id in by_id:
+            by_id[s.parent_session_id].child_session_ids.append(s.session_id)
+
+    # Propagate status: walk children to determine if parent is still active.
+    # A parent is "running" if ANY descendant is running or waiting,
+    # regardless of the parent's own state_mtime.
+    active_statuses = {"running", "waiting", "idle"}
+
+    def _has_active_descendant(session_id: str, visited: set[str]) -> bool:
+        """Recursively check if any descendant is active."""
+        if session_id in visited:
+            return False  # prevent cycles
+        visited.add(session_id)
+        parent = by_id.get(session_id)
+        if not parent:
+            return False
+        for child_id in parent.child_session_ids:
+            child = by_id.get(child_id)
+            if not child:
+                continue
+            if child.status in active_statuses:
+                return True
+            if _has_active_descendant(child_id, visited):
+                return True
+        return False
+
+    for s in sessions:
+        if s.child_session_ids and s.status == "stalled":
+            if _has_active_descendant(s.session_id, set()):
+                s.status = "running"
 
 
 def scan_all_sessions(projects_dir: Path | None = None) -> list[RecipeSession]:
@@ -265,6 +318,9 @@ def scan_all_sessions(projects_dir: Path | None = None) -> list[RecipeSession]:
             session = load_session(session_dir, project_slug=slug_dir.name)
             if session:
                 sessions.append(session)
+
+    # Link parent↔child and propagate status
+    _link_parent_child(sessions)
 
     sessions.sort(key=lambda s: s.started, reverse=True)
     return sessions
