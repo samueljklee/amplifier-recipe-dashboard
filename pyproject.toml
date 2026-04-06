@@ -7,11 +7,14 @@ license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "Samuel Lee" }]
 dependencies = [
-    "flask>=3.0",
-    "waitress>=3.0",
-    "click>=8.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
     "pyyaml>=6.0",
+    "itsdangerous>=2.1",
 ]
+
+[project.optional-dependencies]
+pam = ["python-pam>=2.0"]
 
 [project.scripts]
 amplifier-recipe-dashboard = "amplifier_recipe_dashboard.cli:main"
