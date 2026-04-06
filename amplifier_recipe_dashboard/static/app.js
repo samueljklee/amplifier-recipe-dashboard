@@ -287,7 +287,7 @@ class RecipeDashboard {
             const filtered = this._applyTextFilter(projSessions, project);
             if (filtered.length === 0) continue;
 
-            const shortProject = project.replace(/^Users-[^-]+-/, '').replace(/-/g, '/');
+            const shortProject = this._shortPath(projSessions[0]?.project_path, project);
             const isExpanded = this._expandedGroups.has(project);
             const chevron = isExpanded ? '\u25be' : '\u25b8';
             const runningCount = filtered.filter(s => s.status === 'running').length;
@@ -326,7 +326,7 @@ class RecipeDashboard {
         const stepsTotal = s.total_steps || stepsDone;
         const pct = stepsTotal > 0 ? Math.round((stepsDone / stepsTotal) * 100) : 0;
         const planFile = s.plan_path ? s.plan_path.split('/').pop() : '';
-        const shortProject = (s.project_slug || '').replace(/^Users-[^-]+-/, '').replace(/-/g, '/');
+        const shortProject = this._shortPath(s.project_path, s.project_slug);
         const sessionIdShort = s.session_id.slice(0, 8);
 
         const secondLine = showProject && shortProject
@@ -1287,6 +1287,17 @@ class RecipeDashboard {
     }
 
     // -- Helpers -----------------------------------------------------------
+
+    _shortPath(projectPath, fallbackSlug) {
+        // Use the real filesystem path when available — slug-to-path
+        // conversion is lossy (hyphens in directory names are
+        // indistinguishable from path separators in the slug).
+        if (projectPath) {
+            return projectPath.replace(/^\/(?:Users|home)\/[^/]+\//, '~/');
+        }
+        // Fallback: strip the Users-<username>- prefix, keep hyphens as-is.
+        return (fallbackSlug || '').replace(/^Users-[^-]+-/, '') || fallbackSlug || '';
+    }
 
     _esc(str) {
         if (!str) return '';
