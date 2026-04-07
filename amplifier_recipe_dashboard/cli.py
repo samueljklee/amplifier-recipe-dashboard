@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import platform
+import secrets as _secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -275,6 +277,162 @@ def doctor() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Auth helpers (show-password, reset-secret)
+# ---------------------------------------------------------------------------
+
+
+def show_password() -> None:
+    """Print the current dashboard password or indicate PAM mode."""
+    from .auth import load_password, pam_available
+
+    auth_setting = os.environ.get("DASHBOARD_AUTH", "").lower()
+    if auth_setting != "password" and pam_available():
+        print("Auth mode: PAM — no password file used")
+        return
+    pw = load_password()
+    if pw:
+        print(f"Password: {pw}")
+    else:
+        print("No password file found. Start the dashboard with auth enabled to auto-generate one.")
+
+
+def reset_secret() -> None:
+    """Regenerate the signing secret and warn that all sessions are now invalid."""
+    from .auth import get_secret_path
+
+    path = get_secret_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secret = _secrets.token_urlsafe(32)
+    path.write_text(secret + "\n")
+    path.chmod(0o600)
+    print(f"Secret written to {path}")
+    print("Warning: all active sessions are now invalid.")
+
+
+# ---------------------------------------------------------------------------
+# Upgrade command
+# ---------------------------------------------------------------------------
+
+
+def upgrade(*, force: bool = False) -> None:
+    """Upgrade amplifier-recipe-dashboard to the latest version and restart the service."""
+    from .service import service_install, service_start, service_stop
+
+    print("\namplifier-recipe-dashboard upgrade\n")
+
+    # 1. Show current install info
+    info = _get_install_info()
+    commit_suffix = f" (commit {info['commit'][:8]})" if info["commit"] else ""
+    print(f"  Installed: v{info['version']}{commit_suffix} via {info['source']}")
+
+    # 2. Editable install → bail out
+    if info["source"] == "editable":
+        print("  Editable install detected — manage updates manually.")
+        return
+
+    # 3. Check for update (unless --force)
+    if not force:
+        update_available, message = _check_for_update(info)
+        print(f"  Status: {message}")
+
+        if not update_available:
+            print(
+                "\n  Already up to date."
+                " Use 'amplifier-recipe-dashboard upgrade --force'"
+                " to reinstall anyway.\n"
+            )
+            return
+    else:
+        print("  Status: --force specified — skipping version check")
+
+    # 4. Stop service if running
+    service_was_running = False
+    try:
+        if sys.platform == "darwin":
+            label = "com.amplifier-recipe-dashboard"
+            uid = os.getuid()
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{uid}/{label}"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                service_was_running = True
+                print("  Stopping service...")
+                service_stop()
+        else:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", "amplifier-recipe-dashboard"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                service_was_running = True
+                print("  Stopping service...")
+                service_stop()
+    except Exception:  # noqa: BLE001
+        pass  # service module may not be available
+
+    # 5. Run upgrade command
+    print("  Installing latest version...")
+    uv_path = shutil.which("uv")
+
+    if info["source"] == "git" and info.get("url"):
+        # Git install: use uv tool install git+<url> --force
+        if uv_path:
+            cmd = [uv_path, "tool", "install", f"git+{info['url']}", "--force"]
+        else:
+            pip_path = shutil.which("pip") or shutil.which("pip3")
+            if not pip_path:
+                print("  ERROR: neither uv nor pip found — cannot upgrade")
+                return
+            cmd = [pip_path, "install", "--upgrade", f"git+{info['url']}"]
+    elif info["source"] == "pypi":
+        # PyPI install: uv tool install --upgrade
+        if uv_path:
+            cmd = [uv_path, "tool", "install", "amplifier-recipe-dashboard", "--upgrade"]
+        else:
+            pip_path = shutil.which("pip") or shutil.which("pip3")
+            if not pip_path:
+                print("  ERROR: neither uv nor pip found — cannot upgrade")
+                return
+            cmd = [pip_path, "install", "--upgrade", "amplifier-recipe-dashboard"]
+    else:
+        # Unknown source — try PyPI as fallback
+        if uv_path:
+            cmd = [uv_path, "tool", "install", "amplifier-recipe-dashboard", "--upgrade"]
+        else:
+            pip_path = shutil.which("pip") or shutil.which("pip3")
+            if not pip_path:
+                print("  ERROR: neither uv nor pip found — cannot upgrade")
+                return
+            cmd = [pip_path, "install", "--upgrade", "amplifier-recipe-dashboard"]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  ERROR: install failed:\n{result.stderr}")
+        return
+    print("  Installed successfully")
+
+    # 6. Restart service if it was running
+    if service_was_running:
+        print("  Regenerating service file...")
+        try:
+            service_install()
+        except Exception:  # noqa: BLE001
+            pass
+        print("  Restarting service...")
+        try:
+            service_start()
+        except Exception:  # noqa: BLE001
+            print("  Warning: could not restart service")
+
+    # 7. Run doctor to verify
+    print("\n  Verifying...")
+    doctor()
+
+
+# ---------------------------------------------------------------------------
 # Settings helpers (config subcommands)
 # ---------------------------------------------------------------------------
 
@@ -390,6 +548,10 @@ def serve(args: argparse.Namespace) -> None:
     settings = load_settings()
     host = args.host if args.host is not None else settings.get("host", "127.0.0.1")
     port = args.port if args.port is not None else settings.get("port", 8181)
+    auth = getattr(args, "auth", None)
+    auth = auth if auth is not None else settings.get("auth", "none")
+    session_ttl = getattr(args, "session_ttl", None)
+    session_ttl = session_ttl if session_ttl is not None else settings.get("session_ttl", 604800)
     auto_open = settings.get("auto_open", True) if not args.no_open else False
     debug = args.debug
     refresh_interval = settings.get("refresh_interval", 15)
@@ -403,7 +565,7 @@ def serve(args: argparse.Namespace) -> None:
     # Configure the app with settings before uvicorn starts
     from .server import create_app
 
-    create_app(refresh_interval=refresh_interval)
+    create_app(refresh_interval=refresh_interval, auth=auth, session_ttl=session_ttl)
 
     url = f"http://{host}:{port}"
     print(f"Recipe Dashboard starting at {url}")
@@ -433,7 +595,7 @@ def serve(args: argparse.Namespace) -> None:
 
 
 def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
-    """Add --host, --port, --no-open, --debug flags to a parser.
+    """Add --host, --port, --auth, --session-ttl, --no-open, --debug flags to a parser.
 
     All default to None so serve() can distinguish 'not passed' from
     'passed the default value'.
@@ -448,6 +610,19 @@ def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help="Port (default: from settings.json, then 8181)",
+    )
+    parser.add_argument(
+        "--auth",
+        choices=["none", "pam", "password"],
+        default=None,
+        help="Auth method: none, pam, or password (default: from settings.json, then none)",
+    )
+    parser.add_argument(
+        "--session-ttl",
+        type=int,
+        default=None,
+        dest="session_ttl",
+        help="Session TTL in seconds (default: from settings.json, then 604800)",
     )
     parser.add_argument(
         "--no-open",
@@ -505,8 +680,23 @@ def main() -> None:
     # --- doctor ---
     sub.add_parser("doctor", help="Check dependencies and system status")
 
+    # --- show-password ---
+    sub.add_parser("show-password", help="Show the current dashboard password")
+
+    # --- reset-secret ---
+    sub.add_parser("reset-secret", help="Regenerate signing secret (invalidates sessions)")
+
     # --- upgrade ---
-    sub.add_parser("upgrade", help="Upgrade to latest version (not yet implemented)")
+    upgrade_parser = sub.add_parser(
+        "upgrade",
+        aliases=["update"],
+        help="Upgrade to latest version and restart service",
+    )
+    upgrade_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force reinstall even if already up to date",
+    )
 
     args = parser.parse_args()
 
@@ -552,8 +742,12 @@ def main() -> None:
             service_parser.print_help()
     elif args.command == "doctor":
         doctor()
-    elif args.command == "upgrade":
-        print("upgrade: not yet implemented")
+    elif args.command == "show-password":
+        show_password()
+    elif args.command == "reset-secret":
+        reset_secret()
+    elif args.command in ("upgrade", "update"):
+        upgrade(force=getattr(args, "force", False))
     else:
         # Default (bare command or explicit "serve")
         serve(args)

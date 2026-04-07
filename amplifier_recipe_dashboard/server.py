@@ -10,8 +10,8 @@ import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .git_tracker import get_commits_since, match_tasks_to_commits
@@ -25,6 +25,12 @@ _sessions: list[RecipeSession] = []
 _sessions_lock = asyncio.Lock()
 _projects_dir: Path | None = None
 _refresh_interval: float = 15.0
+
+# Auth state (populated by create_app when auth != "none")
+_auth_mode: str = "none"
+_auth_password: str = ""
+_auth_secret: str = ""
+_auth_ttl: int = 604800
 
 # Template variable pattern: {{variable_name}}
 _TEMPLATE_VAR_RE = re.compile(r"\{\{(\w+)\}\}")
@@ -481,6 +487,80 @@ async def api_refresh() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Auth routes
+# ---------------------------------------------------------------------------
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page() -> HTMLResponse:
+    """Serve login.html with auth mode and hostname injected."""
+    html = (_TEMPLATE_DIR / "login.html").read_text()
+    html = html.replace("__HOSTNAME__", _HOSTNAME)
+    # Inject auth config as a JS global before the closing </head>
+    auth_script = (
+        f'<script>window.DASHBOARD_AUTH = {{"mode": "{_auth_mode}",'
+        f' "hostname": "{_HOSTNAME}"}};</script>'
+    )
+    html = html.replace("</head>", f"  {auth_script}\n</head>")
+    return HTMLResponse(html)
+
+
+@app.post("/auth/login")
+async def auth_login(request: Request) -> Response:
+    """Verify credentials, set signed cookie, return success/failure."""
+    from .auth import authenticate_pam, create_session_cookie
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"ok": False, "detail": "Invalid request body"}, status_code=400)
+
+    username = body.get("username", "")
+    password = body.get("password", "")
+
+    # Verify credentials
+    authenticated = False
+    if _auth_mode == "pam":
+        authenticated = authenticate_pam(username, password)
+    elif _auth_mode == "password":
+        authenticated = password == _auth_password
+    else:
+        # auth == "none" — shouldn't reach here but allow through
+        authenticated = True
+
+    if not authenticated:
+        return JSONResponse({"ok": False, "detail": "Invalid credentials"}, status_code=401)
+
+    # Set signed session cookie
+    cookie_value = create_session_cookie(_auth_secret)
+    response = JSONResponse({"ok": True})
+    max_age = _auth_ttl if _auth_ttl > 0 else None
+    response.set_cookie(
+        key="dashboard_session",
+        value=cookie_value,
+        httponly=True,
+        samesite="lax",
+        max_age=max_age,
+        path="/",
+    )
+    return response
+
+
+@app.get("/auth/logout")
+async def auth_logout() -> RedirectResponse:
+    """Clear session cookie and redirect to login."""
+    response = RedirectResponse(url="/login", status_code=307)
+    response.delete_cookie(key="dashboard_session", path="/")
+    return response
+
+
+@app.get("/auth/mode")
+async def auth_mode() -> dict:
+    """Return the current auth mode for frontend use."""
+    return {"mode": _auth_mode}
+
+
+# ---------------------------------------------------------------------------
 # Static file serving — MUST come after all API routes (first-match-wins)
 # ---------------------------------------------------------------------------
 
@@ -495,14 +575,49 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 def create_app(
     projects_dir: Path | None = None,
     refresh_interval: float = 15.0,
+    auth: str = "none",
+    session_ttl: int = 604800,
 ) -> FastAPI:
     """Configure the module-level app for the given projects_dir.
 
     Returns the module-level ``app`` after setting globals used by routes.
     This mirrors the Flask create_app() pattern for backward compatibility
     with cli.py, while being a thin wrapper around the module-level FastAPI app.
+
+    When *auth* is not "none", resolves the auth mode and attaches
+    :class:`~amplifier_recipe_dashboard.auth.AuthMiddleware`.
     """
     global _projects_dir, _refresh_interval
+    global _auth_mode, _auth_password, _auth_secret, _auth_ttl
+
     _projects_dir = projects_dir
     _refresh_interval = refresh_interval
+
+    # --- Auth setup ---
+    if auth != "none":
+        from .auth import AuthMiddleware, load_or_create_secret, resolve_auth_mode
+
+        mode, password = resolve_auth_mode(auth)
+        secret = load_or_create_secret()
+
+        _auth_mode = mode
+        _auth_password = password
+        _auth_secret = secret
+        _auth_ttl = session_ttl
+
+        if mode != "none":
+            app.add_middleware(
+                AuthMiddleware,
+                auth_mode=mode,
+                secret=secret,
+                ttl_seconds=session_ttl,
+                password=password,
+            )
+            logger.info("Auth middleware enabled: mode=%s, ttl=%ds", mode, session_ttl)
+    else:
+        _auth_mode = "none"
+        _auth_password = ""
+        _auth_secret = ""
+        _auth_ttl = session_ttl
+
     return app

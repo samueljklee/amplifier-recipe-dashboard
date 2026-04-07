@@ -16,6 +16,7 @@ DEFAULT_SETTINGS: dict = {
     "auto_open": True,
     "refresh_interval": 15,
     "auth": "none",
+    "session_ttl": 604800,
     "device_name": "",
 }
 
