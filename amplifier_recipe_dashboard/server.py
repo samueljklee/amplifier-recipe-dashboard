@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,6 +38,7 @@ _poll_task: asyncio.Task[None] | None = None
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
+_HOSTNAME = socket.gethostname().split(".")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -340,8 +342,12 @@ def _parse_since(since_str: str | None) -> datetime | None:
 
 @app.get("/", response_class=HTMLResponse)
 async def index_page() -> HTMLResponse:
-    """Serve index.html (muxplex html.replace pattern)."""
+    """Serve index.html with hostname injected into the title."""
     html = (_TEMPLATE_DIR / "index.html").read_text()
+    html = html.replace(
+        "<title>Recipe Dashboard</title>",
+        f"<title>{_HOSTNAME} — Recipe Dashboard</title>",
+    )
     return HTMLResponse(html)
 
 

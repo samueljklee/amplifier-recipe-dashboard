@@ -29,6 +29,15 @@ class RecipeDashboard {
         this._allTasksExpanded = false;
         this._activeOutcomeTab = 'summary';
 
+        // Favicon badge state — lazy-cached Image to avoid re-fetching every poll
+        this._originalFavicon = null;
+        this._faviconImage = null;
+        // Extract hostname from initial document.title: "hostname — Recipe Dashboard"
+        this._hostname = '';
+        const titleParts = document.title.split(' — ');
+        if (titleParts.length >= 2) this._hostname = titleParts[0];
+        this._baseTitle = document.title;
+
         // Hash-based routing
         window.addEventListener('hashchange', () => {
             const hash = window.location.hash.slice(1);
@@ -122,6 +131,11 @@ class RecipeDashboard {
             this._statusDot.classList.add('active');
             this._lastUpdated.textContent = 'Updated ' + new Date().toLocaleTimeString();
             this._lastUpdated.style.color = '';
+
+            // Update favicon badge and dynamic title after each successful poll
+            const allSessions = this._lastSessionList || [];
+            this.updateFaviconBadge(allSessions);
+            this.updateTitle(allSessions);
         } catch (e) {
             this._statusDot.classList.remove('active');
             this._lastUpdated.textContent = 'Connection lost \u2014 retrying...';
@@ -486,12 +500,15 @@ class RecipeDashboard {
     async _showDetail(sessionId, isPoll = false) {
         let session, tasks;
         try {
-            const [sRes, tRes] = await Promise.all([
+            const [sRes, tRes, allRes] = await Promise.all([
                 fetch(`/api/session/${sessionId}`),
                 fetch(`/api/session/${sessionId}/tasks`),
+                fetch('/api/sessions'),
             ]);
             session = await sRes.json();
             tasks = await tRes.json();
+            const allData = await allRes.json();
+            this._lastSessionList = allData.sessions || [];
         } catch {
             this._el.innerHTML = '<p>Failed to load session</p>';
             return;
@@ -1475,6 +1492,96 @@ class RecipeDashboard {
         }
         html += '</tbody></table>';
         return html;
+    }
+
+    // -- Favicon Badge + Dynamic Title ------------------------------------
+
+    /**
+     * Draw the favicon with a colored activity dot overlay.
+     * Uses lazy-cached _faviconImage pattern (avoids network fetch every poll).
+     */
+    _drawFaviconBadge(color) {
+        // Lazy-init: create the Image object once and cache it
+        if (!this._faviconImage) {
+            this._faviconImage = new Image();
+            this._faviconImage.crossOrigin = 'anonymous';
+            this._faviconImage.src = this._originalFavicon;
+        }
+
+        // If image is not yet loaded, wait for it (onload will call us back)
+        if (!this._faviconImage.complete || this._faviconImage.naturalWidth === 0) {
+            const c = color;
+            this._faviconImage.onload = () => { this._drawFaviconBadge(c); };
+            return;
+        }
+
+        const link = document.querySelector('link[rel="icon"]');
+        if (!link) return;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        ctx.drawImage(this._faviconImage, 0, 0, 32, 32);
+
+        // Activity dot — top-right
+        ctx.beginPath();
+        ctx.arc(24, 8, 7, 0, 2 * Math.PI);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.strokeStyle = '#1a1b26';  // dark background for contrast
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        link.href = canvas.toDataURL('image/png');
+    }
+
+    /**
+     * Update favicon badge based on session statuses.
+     * Red dot: sessions waiting (pending approval).
+     * Amber dot: sessions running.
+     * No badge: all other states.
+     */
+    updateFaviconBadge(sessions) {
+        const link = document.querySelector('link[rel="icon"]');
+        if (!link) return;
+
+        // Cache the original favicon href on first call
+        if (!this._originalFavicon) this._originalFavicon = link.href;
+
+        const hasWaiting = sessions.some(s => s.status === 'waiting');
+        const hasRunning = sessions.some(s => s.status === 'running');
+
+        if (hasWaiting) {
+            this._drawFaviconBadge('#E53E3E');  // red
+        } else if (hasRunning) {
+            this._drawFaviconBadge('#F1A640');  // amber
+        } else {
+            // Restore original favicon
+            if (link.href !== this._originalFavicon) link.href = this._originalFavicon;
+        }
+    }
+
+    /**
+     * Update document.title with activity counts after each poll.
+     * "2 running · 1 waiting — hostname — Recipe Dashboard" or
+     * "hostname — Recipe Dashboard" when idle.
+     */
+    updateTitle(sessions) {
+        const running = sessions.filter(s => s.status === 'running').length;
+        const waiting = sessions.filter(s => s.status === 'waiting').length;
+
+        const parts = [];
+        if (running) parts.push(`${running} running`);
+        if (waiting) parts.push(`${waiting} waiting`);
+
+        if (parts.length > 0) {
+            document.title = `${parts.join(' · ')} — ${this._baseTitle}`;
+        } else {
+            document.title = this._baseTitle;
+        }
     }
 
     // -- Navigation -------------------------------------------------------
