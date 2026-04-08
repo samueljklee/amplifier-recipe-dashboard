@@ -298,7 +298,7 @@ def _link_parent_child(sessions: list[RecipeSession]) -> None:
         return False
 
     for s in sessions:
-        if s.child_session_ids and s.status == "stalled":
+        if s.child_session_ids and s.status in ("stalled", "idle"):
             if _has_active_descendant(s.session_id, set()):
                 s.status = "running"
 
