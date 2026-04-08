@@ -481,60 +481,6 @@ class RecipeDashboard {
         return html;
     }
 
-    /**
-     * Render child (sub-recipe) sessions as a tree with status and progress.
-     * Uses the cached session list from the last /api/sessions fetch.
-     */
-    _renderChildSessions(session) {
-        const childIds = session.child_session_ids || [];
-        if (childIds.length === 0) return '';
-
-        // Build a lookup from the cached sessions
-        const allSessions = this._lastSessionList || [];
-        const byId = {};
-        for (const s of allSessions) byId[s.session_id] = s;
-
-        const renderNode = (id, depth) => {
-            const child = byId[id];
-            if (!child) {
-                return `<div class="child-session-row" style="padding-left:${depth * 20}px;">
-                    <span class="status stalled">unknown</span>
-                    <span class="recipe-name">${this._esc(id.slice(0, 16))}...</span>
-                </div>`;
-            }
-            const stepsDone = (child.completed_steps || []).length;
-            const stepsTotal = child.total_steps || stepsDone;
-            const pct = stepsTotal > 0 ? Math.round((stepsDone / stepsTotal) * 100) : 0;
-            const elapsed = this._timeAgo(child.started);
-            const grandchildren = child.child_session_ids || [];
-
-            let html = `<div class="child-session-row" style="padding-left:${depth * 20}px;"
-                 tabindex="0" role="button"
-                 onclick="dashboard.navigateTo('${child.session_id}')"
-                 onkeydown="event.key==='Enter'&&dashboard.navigateTo('${child.session_id}')">
-                <span class="status ${child.status}">${child.status}</span>
-                <span class="recipe-name">${this._esc(child.recipe_name)}</span>
-                <span class="progress-cell">
-                    <span class="mini-progress"><span class="mini-progress-fill" style="width:${pct}%"></span></span>
-                    <span class="progress-text">${stepsDone}/${stepsTotal}</span>
-                </span>
-                <span class="time">${elapsed}</span>
-            </div>`;
-            // Recurse into grandchildren
-            for (const gcId of grandchildren) {
-                html += renderNode(gcId, depth + 1);
-            }
-            return html;
-        };
-
-        let html = '<div class="child-sessions-tree">';
-        for (const childId of childIds) {
-            html += renderNode(childId, 0);
-        }
-        html += '</div>';
-        return html;
-    }
-
     // -- Detail View ------------------------------------------------------
 
     async _showDetail(sessionId, isPoll = false) {

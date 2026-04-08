@@ -1457,52 +1457,6 @@ main {
     max-width: 300px;
 }
 
-/* --- Child Sessions (Sub-Recipe Tree) --- */
-.child-sessions-tree {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-.child-session-row {
-    display: grid;
-    grid-template-columns: 80px 1fr 120px 100px;
-    gap: 12px;
-    align-items: center;
-    padding: 8px 12px;
-    background: var(--bg-surface);
-    border-radius: var(--radius);
-    border-left: 3px solid var(--border);
-    cursor: pointer;
-    transition: background 0.15s;
-    outline: none;
-}
-.child-session-row:hover,
-.child-session-row:focus-visible {
-    background: var(--bg-hover);
-}
-.child-session-row .status {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-.child-session-row .recipe-name {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-weight: 500;
-}
-.child-session-row .progress-cell {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-.child-session-row .time {
-    color: var(--text-muted);
-    font-size: 12px;
-    text-align: right;
-}
-
 /* --- Inline Sub-Recipe (merged into Recipe Steps) --- */
 .inline-sub-recipe {
     border-left: 3px solid var(--border);
