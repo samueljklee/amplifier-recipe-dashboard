@@ -456,8 +456,10 @@ class RecipeDashboard {
             const pct = stepsTotal > 0 ? Math.round((stepsDone / stepsTotal) * 100) : 0;
             const elapsed = this._timeAgo(child.started);
 
+            const sessionIdShort = child.session_id.slice(0, 8);
             html += `<div class="session-row child-row" style="margin-left:${24 + depth * 20}px;"
                           tabindex="0" role="button"
+                          title="Session: ${child.session_id}"
                           onclick="dashboard.navigateTo('${child.session_id}')"
                           onkeydown="event.key==='Enter'&&dashboard.navigateTo('${child.session_id}')">
                 <span class="status ${child.status}">${child.status}</span>
@@ -468,7 +470,10 @@ class RecipeDashboard {
                     <span class="mini-progress"><span class="mini-progress-fill" style="width:${pct}%"></span></span>
                     <span class="progress-text">${stepsDone}/${stepsTotal}</span>
                 </span>
-                <span class="time">${elapsed}</span>
+                <span class="time">
+                    ${elapsed}
+                    <span class="session-id-hint">${sessionIdShort}</span>
+                </span>
             </div>`;
             // Recurse for grandchildren
             html += this._renderChildTree(child, allSessions, childIdSet, depth + 1);

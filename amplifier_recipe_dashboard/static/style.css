@@ -232,9 +232,9 @@ main {
 .status.running { color: var(--green); }
 .status.waiting { color: var(--yellow); }
 .status.idle { color: var(--blue); }
-.status.done { color: var(--text-muted); }
+.status.done { color: color-mix(in srgb, var(--green) 45%, var(--text-muted)); }
 .status.stalled { color: var(--yellow); }
-.status.cancelled { color: var(--text-muted); text-decoration: line-through; }
+.status.cancelled { color: color-mix(in srgb, var(--red) 50%, var(--text-muted)); text-decoration: line-through; }
 .status.failed { color: var(--red); }
 
 /* Pulse animation for running status */
@@ -1511,10 +1511,10 @@ main {
 }
 .inline-sub-recipe-header {
     display: grid;
-    grid-template-columns: 80px 1fr 120px 80px;
+    grid-template-columns: 80px 1fr 120px 100px;
     gap: 8px;
     align-items: center;
-    padding: 6px 8px;
+    padding: 8px 12px;
     background: var(--bg-surface);
     border-radius: var(--radius);
     cursor: pointer;
@@ -1524,6 +1524,7 @@ main {
     background: var(--bg-hover);
 }
 .inline-sub-recipe-name {
+    font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
@@ -1536,13 +1537,13 @@ main {
     display: flex;
     gap: 8px;
     align-items: center;
-    padding: 2px 4px;
-    font-size: 12px;
+    padding: 5px 8px;
+    font-size: 13px;
     color: var(--text-muted);
 }
 .inline-step.completed { color: var(--text); }
-.inline-step .step-icon { width: 16px; text-align: center; }
-.inline-step .step-name { font-weight: 500; }
+.inline-step .step-icon { width: 16px; text-align: center; font-size: 11px; font-weight: 600; }
+.inline-step .step-name { font-size: 13px; font-weight: 500; }
 .inline-step .step-type { color: var(--text-muted); font-size: 11px; }
 
 .step-sub-recipe-badge {
@@ -1553,7 +1554,9 @@ main {
     margin-left: 8px;
     padding: 1px 6px;
     border-radius: 3px;
-    background: var(--bg-hover);
+    background: color-mix(in srgb, var(--purple, #a371f7) 12%, var(--bg-surface));
+    color: var(--purple, #a371f7);
+    border: 1px solid color-mix(in srgb, var(--purple, #a371f7) 22%, transparent);
 }
 
 /* --- View Toggle (Tree/Flat) --- */
@@ -1585,9 +1588,9 @@ main {
 
 /* --- Child Tree Rows (discovery view tree mode) --- */
 .session-row.child-row {
-    border-left: 2px solid var(--border);
-    background: transparent;
-    font-size: 13px;
+    border-left: 3px solid var(--border);
+    background: color-mix(in srgb, var(--border) 10%, var(--bg));
+    font-size: inherit;
 }
 .session-row.child-row:hover,
 .session-row.child-row:focus-visible {
@@ -1598,7 +1601,7 @@ main {
     font-size: 12px;
     color: var(--text-muted);
     cursor: pointer;
-    border-left: 2px solid var(--border);
+    border-left: 3px solid var(--border);
     border-radius: 0 var(--radius) var(--radius) 0;
     outline: none;
 }
