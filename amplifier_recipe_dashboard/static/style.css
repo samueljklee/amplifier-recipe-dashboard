@@ -1523,6 +1523,11 @@ main {
 .inline-sub-recipe-header:hover {
     background: var(--bg-hover);
 }
+.inline-sub-recipe-header .time {
+    color: var(--text-muted);
+    font-size: 12px;
+    text-align: right;
+}
 .inline-sub-recipe-name {
     font-size: 13px;
     font-weight: 500;

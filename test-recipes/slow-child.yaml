@@ -1,0 +1,19 @@
+name: slow-child
+version: "1.0.0"
+description: "Slow child recipe -- takes ~30s per step for live monitoring testing"
+
+steps:
+  - id: slow-step-1
+    type: bash
+    command: echo "Child step 1 starting..." && sleep 15 && echo "Child step 1 done"
+    output: slow_child_result_1
+
+  - id: slow-step-2
+    type: bash
+    command: echo "Child step 2 starting..." && sleep 15 && echo "Child step 2 done"
+    output: slow_child_result_2
+
+  - id: slow-step-3
+    type: bash
+    command: echo "Child step 3 starting..." && sleep 15 && echo "Child step 3 done"
+    output: slow_child_result_3

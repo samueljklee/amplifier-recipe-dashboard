@@ -1,0 +1,19 @@
+name: slow-nested-child
+version: "1.0.0"
+description: "Mid-level slow recipe that invokes a slow grandchild"
+
+steps:
+  - id: nested-slow-1
+    type: bash
+    command: echo "Nested child starting..." && sleep 10 && echo "Nested child step 1 done"
+    output: nested_slow_result_1
+
+  - id: invoke-slow-grandchild
+    type: recipe
+    recipe: ./slow-child.yaml
+    output: slow_grandchild_output
+
+  - id: nested-slow-3
+    type: bash
+    command: echo "Nested child final step..." && sleep 10 && echo "Nested child complete"
+    output: nested_slow_result_3

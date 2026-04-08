@@ -1,0 +1,29 @@
+name: slow-parent-hierarchy
+version: "1.0.0"
+description: "Slow parent recipe for testing live monitoring -- takes ~2-3 minutes total"
+
+steps:
+  - id: parent-init
+    type: bash
+    command: echo "Parent recipe initializing..." && sleep 5 && echo "Parent init done"
+    output: parent_init
+
+  - id: invoke-slow-child-a
+    type: recipe
+    recipe: ./slow-child.yaml
+    output: slow_child_a_output
+
+  - id: invoke-slow-nested
+    type: recipe
+    recipe: ./slow-nested-child.yaml
+    output: slow_nested_output
+
+  - id: invoke-slow-child-b
+    type: recipe
+    recipe: ./slow-child.yaml
+    output: slow_child_b_output
+
+  - id: parent-final
+    type: bash
+    command: echo "All sub-recipes complete" && sleep 5 && echo "Parent done"
+    output: parent_final
