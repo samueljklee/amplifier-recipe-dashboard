@@ -48,7 +48,10 @@ def get_commits_since(
         return []
 
     cmd = [
-        "git", "-C", str(path), "log",
+        "git",
+        "-C",
+        str(path),
+        "log",
         f"--max-count={max_count}",
         "--format=%h\t%s\t%aI",
     ]
@@ -67,12 +70,14 @@ def get_commits_since(
             continue
         commit_hash, subject, timestamp = parts
         task_nums = [int(m.group(1)) for m in _TASK_REF_RE.finditer(subject)]
-        commits.append(GitCommit(
-            hash=commit_hash,
-            subject=subject,
-            timestamp=timestamp,
-            task_numbers=task_nums,
-        ))
+        commits.append(
+            GitCommit(
+                hash=commit_hash,
+                subject=subject,
+                timestamp=timestamp,
+                task_numbers=task_nums,
+            )
+        )
     return commits
 
 

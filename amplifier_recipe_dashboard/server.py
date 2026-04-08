@@ -1,15 +1,18 @@
-"""Flask app serving the recipe dashboard REST API and web UI."""
+"""FastAPI app serving the recipe dashboard REST API and web UI."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import re
-import threading
-import time
-from datetime import datetime, timezone
+import socket
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Blueprint, Flask, jsonify, render_template, request
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from .git_tracker import get_commits_since, match_tasks_to_commits
 from .plan_parser import parse_plan
@@ -19,40 +22,103 @@ logger = logging.getLogger(__name__)
 
 # Module-level state for background refresh
 _sessions: list[RecipeSession] = []
-_sessions_lock = threading.Lock()
+_sessions_lock = asyncio.Lock()
 _projects_dir: Path | None = None
+_refresh_interval: float = 15.0
+
+# Auth state (populated by create_app when auth != "none")
+_auth_mode: str = "none"
+_auth_password: str = ""
+_auth_secret: str = ""
+_auth_ttl: int = 604800
 
 # Template variable pattern: {{variable_name}}
 _TEMPLATE_VAR_RE = re.compile(r"\{\{(\w+)\}\}")
 
+# Background poll task reference
+_poll_task: asyncio.Task[None] | None = None
+
+# ---------------------------------------------------------------------------
+# Frontend directory
+# ---------------------------------------------------------------------------
+
+_STATIC_DIR = Path(__file__).parent / "static"
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
+_HOSTNAME = socket.gethostname().split(".")[0]
+
+
+# ---------------------------------------------------------------------------
+# Background refresh
+# ---------------------------------------------------------------------------
+
 
 def _refresh_sessions() -> None:
-    """Re-scan all recipe sessions from disk."""
+    """Re-scan all recipe sessions from disk (sync, called from async context)."""
     global _sessions
-    new_sessions = scan_all_sessions(_projects_dir)
-    with _sessions_lock:
-        _sessions = new_sessions
+    _sessions = scan_all_sessions(_projects_dir)
 
 
-def _background_refresh(interval: float = 15.0) -> None:
-    """Background thread: refresh sessions periodically."""
-    while True:
-        try:
-            _refresh_sessions()
-        except Exception:
-            logger.exception("Error refreshing sessions")
-        time.sleep(interval)
-
-
-def _get_sessions() -> list[RecipeSession]:
-    """Thread-safe accessor for current session list."""
-    with _sessions_lock:
+async def _get_sessions() -> list[RecipeSession]:
+    """Async-safe accessor for current session list."""
+    async with _sessions_lock:
         return list(_sessions)
 
 
-def _find_session(session_id: str) -> RecipeSession | None:
+async def _poll_loop() -> None:
+    """Run session refresh every _refresh_interval seconds, catching all exceptions."""
+    while True:
+        try:
+            async with _sessions_lock:
+                _refresh_sessions()
+        except Exception:
+            logger.exception("Error refreshing sessions")
+        await asyncio.sleep(_refresh_interval)
+
+
+# ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ARG001
+    global _poll_task
+
+    # Initial scan
+    _refresh_sessions()
+
+    # Start background poll loop
+    _poll_task = asyncio.create_task(_poll_loop())
+    yield
+
+    # Cleanup: cancel the poll loop
+    if _poll_task is not None:
+        _poll_task.cancel()
+        try:
+            await _poll_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
+app = FastAPI(
+    title="amplifier-recipe-dashboard",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers (pure functions — unchanged business logic)
+# ---------------------------------------------------------------------------
+
+
+async def _find_session(session_id: str) -> RecipeSession | None:
     """Find a session by ID (prefix match supported)."""
-    for s in _get_sessions():
+    for s in await _get_sessions():
         if s.session_id == session_id or s.session_id.startswith(session_id):
             return s
     return None
@@ -266,171 +332,292 @@ def _parse_since(since_str: str | None) -> datetime | None:
     try:
         if since_str.endswith("d"):
             days = int(since_str[:-1])
-            return datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)
+            return datetime.now(timezone.utc) - timedelta(days=days)
         if since_str.endswith("h"):
             hours = int(since_str[:-1])
-            return datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=hours)
+            return datetime.now(timezone.utc) - timedelta(hours=hours)
     except (ValueError, TypeError):
         return None
     return None
 
 
-def create_app(projects_dir: Path | None = None) -> Flask:
-    """Create and configure the Flask application."""
-    global _projects_dir
-    _projects_dir = projects_dir
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
-    app = Flask(
-        __name__,
-        template_folder=str(Path(__file__).parent / "templates"),
-        static_folder=str(Path(__file__).parent / "static"),
+
+@app.get("/", response_class=HTMLResponse)
+async def index_page() -> HTMLResponse:
+    """Serve index.html with hostname injected into the title."""
+    html = (_TEMPLATE_DIR / "index.html").read_text()
+    html = html.replace(
+        "<title>Recipe Dashboard</title>",
+        f"<title>{_HOSTNAME} — Recipe Dashboard</title>",
     )
+    return HTMLResponse(html)
 
-    bp = Blueprint("dashboard", __name__)
 
-    @bp.route("/")
-    def index():
-        return render_template("index.html")
+@app.get("/api/projects")
+async def api_projects(since: str | None = Query(default=None)) -> dict:
+    """List unique project slugs with session counts, respecting time filter."""
+    sessions = await _get_sessions()
+    since_dt = _parse_since(since)
+    if since_dt:
+        since_iso = since_dt.isoformat()
+        sessions = [s for s in sessions if s.started >= since_iso]
+    projects: dict[str, int] = {}
+    for s in sessions:
+        slug = s.project_slug or "unknown"
+        projects[slug] = projects.get(slug, 0) + 1
 
-    @bp.route("/api/projects")
-    def api_projects():
-        """List unique project slugs with session counts, respecting time filter."""
-        sessions = _get_sessions()
-        since = _parse_since(request.args.get("since"))
-        if since:
-            since_iso = since.isoformat()
-            sessions = [s for s in sessions if s.started >= since_iso]
-        projects: dict[str, int] = {}
-        for s in sessions:
-            slug = s.project_slug or "unknown"
-            projects[slug] = projects.get(slug, 0) + 1
+    def _short_name(slug: str) -> str:
+        """'Users-jane-repo-myproject' -> 'repo-myproject'"""
+        cleaned = re.sub(r"^Users-[^-]+-", "", slug)
+        return cleaned or slug
 
-        def _short_name(slug: str) -> str:
-            """'Users-jane-repo-myproject' -> 'repo-myproject'
-            Keep hyphens as-is since we can't distinguish path separators
-            from hyphens in directory names."""
-            # Strip 'Users-<username>-' prefix, keep the rest verbatim
-            cleaned = re.sub(r"^Users-[^-]+-", "", slug)
-            return cleaned or slug
+    project_list = [
+        {"slug": slug, "count": count, "short_name": _short_name(slug)}
+        for slug, count in projects.items()
+    ]
+    project_list.sort(key=lambda p: p["short_name"].lower())
+    return {"projects": project_list}
 
-        project_list = [
-            {"slug": slug, "count": count, "short_name": _short_name(slug)}
-            for slug, count in projects.items()
-        ]
-        project_list.sort(key=lambda p: p["short_name"].lower())
-        return jsonify({"projects": project_list})
 
-    @bp.route("/api/sessions")
-    def api_sessions():
-        """List all recipe sessions, most recent first."""
-        sessions = _get_sessions()
-        # Optional filter by project slug
-        project = request.args.get("project")
-        if project:
-            sessions = [s for s in sessions if project in s.project_slug]
-        # Optional filter by status
-        status = request.args.get("status")
-        if status:
-            sessions = [s for s in sessions if s.status == status]
-        # Optional time filter
-        since = _parse_since(request.args.get("since"))
-        if since:
-            since_iso = since.isoformat()
-            sessions = [s for s in sessions if s.started >= since_iso]
-        return jsonify(
+@app.get("/api/sessions")
+async def api_sessions(
+    project: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+) -> dict:
+    """List all recipe sessions, most recent first."""
+    sessions = await _get_sessions()
+    if project:
+        sessions = [s for s in sessions if project in s.project_slug]
+    if status:
+        sessions = [s for s in sessions if s.status == status]
+    since_dt = _parse_since(since)
+    if since_dt:
+        since_iso = since_dt.isoformat()
+        sessions = [s for s in sessions if s.started >= since_iso]
+    return {
+        "sessions": [_session_to_dict(s) for s in sessions],
+        "count": len(sessions),
+    }
+
+
+@app.get("/api/session/{session_id}")
+async def api_session_detail(session_id: str) -> dict:
+    """Get detailed state for a single session."""
+    session = await _find_session(session_id)
+    if not session:
+        return {"error": "Session not found"}
+    return _session_to_dict(session)
+
+
+@app.get("/api/session/{session_id}/tasks")
+async def api_session_tasks(session_id: str) -> dict:
+    """Get task-level progress for a session with a plan file."""
+    session = await _find_session(session_id)
+    if not session:
+        return {"error": "Session not found"}
+
+    plan_path = session.plan_path
+    if not plan_path:
+        return {"tasks": [], "info": "This recipe does not use a plan file."}
+
+    tasks = parse_plan(plan_path)
+    if not tasks:
+        return {"error": f"No tasks found in {plan_path}", "tasks": []}
+
+    # Get git commits
+    working_dir = session.working_dir
+    commits = []
+    if working_dir:
+        commits = get_commits_since(working_dir, since=session.started)
+
+    task_commits = match_tasks_to_commits(commits, len(tasks))
+
+    # Build task list with status
+    task_list = []
+    last_done_idx = -1
+    for task in tasks:
+        commit = task_commits.get(task.number)
+        if commit:
+            last_done_idx = task.number
+
+    for task in tasks:
+        commit = task_commits.get(task.number)
+        if commit:
+            task_status = "done"
+        elif task.number == last_done_idx + 1:
+            task_status = "active"
+        else:
+            task_status = "pending"
+
+        task_list.append(
             {
-                "sessions": [_session_to_dict(s) for s in sessions],
-                "count": len(sessions),
+                "number": task.number,
+                "description": task.description,
+                "status": task_status,
+                "commit_hash": commit.hash if commit else None,
+                "commit_subject": commit.subject if commit else None,
+                "commit_time": commit.timestamp if commit else None,
             }
         )
 
-    @bp.route("/api/session/<session_id>")
-    def api_session_detail(session_id: str):
-        """Get detailed state for a single session."""
-        session = _find_session(session_id)
-        if not session:
-            return jsonify({"error": "Session not found"}), 404
-        return jsonify(_session_to_dict(session))
+    done_count = sum(1 for t in task_list if t["status"] == "done")
+    return {
+        "tasks": task_list,
+        "total": len(task_list),
+        "done": done_count,
+        "progress": done_count / len(task_list) if task_list else 0,
+        "plan_path": plan_path,
+        "recent_commits": [
+            {"hash": c.hash, "subject": c.subject, "timestamp": c.timestamp} for c in commits[:10]
+        ],
+    }
 
-    @bp.route("/api/session/<session_id>/tasks")
-    def api_session_tasks(session_id: str):
-        """Get task-level progress for a session with a plan file."""
-        session = _find_session(session_id)
-        if not session:
-            return jsonify({"error": "Session not found"}), 404
 
-        plan_path = session.plan_path
-        if not plan_path:
-            return jsonify({"tasks": [], "info": "This recipe does not use a plan file."})
-
-        tasks = parse_plan(plan_path)
-        if not tasks:
-            return jsonify({"error": f"No tasks found in {plan_path}", "tasks": []})
-
-        # Get git commits
-        working_dir = session.working_dir
-        commits = []
-        if working_dir:
-            commits = get_commits_since(working_dir, since=session.started)
-
-        task_commits = match_tasks_to_commits(commits, len(tasks))
-
-        # Build task list with status
-        task_list = []
-        last_done_idx = -1
-        for task in tasks:
-            commit = task_commits.get(task.number)
-            if commit:
-                last_done_idx = task.number
-
-        for task in tasks:
-            commit = task_commits.get(task.number)
-            if commit:
-                status = "done"
-            elif task.number == last_done_idx + 1:
-                status = "active"
-            else:
-                status = "pending"
-
-            task_list.append(
-                {
-                    "number": task.number,
-                    "description": task.description,
-                    "status": status,
-                    "commit_hash": commit.hash if commit else None,
-                    "commit_subject": commit.subject if commit else None,
-                    "commit_time": commit.timestamp if commit else None,
-                }
-            )
-
-        done_count = sum(1 for t in task_list if t["status"] == "done")
-        return jsonify(
-            {
-                "tasks": task_list,
-                "total": len(task_list),
-                "done": done_count,
-                "progress": done_count / len(task_list) if task_list else 0,
-                "plan_path": plan_path,
-                "recent_commits": [
-                    {"hash": c.hash, "subject": c.subject, "timestamp": c.timestamp}
-                    for c in commits[:10]
-                ],
-            }
-        )
-
-    @bp.route("/api/refresh", methods=["POST"])
-    def api_refresh():
-        """Force an immediate session rescan."""
+@app.post("/api/refresh")
+async def api_refresh() -> dict:
+    """Force an immediate session rescan."""
+    async with _sessions_lock:
         _refresh_sessions()
-        return jsonify({"status": "refreshed", "count": len(_get_sessions())})
+    return {"status": "refreshed", "count": len(await _get_sessions())}
 
-    app.register_blueprint(bp)
 
-    # Initial scan
-    _refresh_sessions()
+# ---------------------------------------------------------------------------
+# Auth routes
+# ---------------------------------------------------------------------------
 
-    # Start background refresh thread
-    t = threading.Thread(target=_background_refresh, daemon=True)
-    t.start()
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page() -> HTMLResponse:
+    """Serve login.html with auth mode and hostname injected."""
+    html = (_TEMPLATE_DIR / "login.html").read_text()
+    html = html.replace("__HOSTNAME__", _HOSTNAME)
+    # Inject auth config as a JS global before the closing </head>
+    auth_script = (
+        f'<script>window.DASHBOARD_AUTH = {{"mode": "{_auth_mode}",'
+        f' "hostname": "{_HOSTNAME}"}};</script>'
+    )
+    html = html.replace("</head>", f"  {auth_script}\n</head>")
+    return HTMLResponse(html)
+
+
+@app.post("/auth/login")
+async def auth_login(request: Request) -> Response:
+    """Verify credentials, set signed cookie, return success/failure."""
+    from .auth import authenticate_pam, create_session_cookie
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"ok": False, "detail": "Invalid request body"}, status_code=400)
+
+    username = body.get("username", "")
+    password = body.get("password", "")
+
+    # Verify credentials
+    authenticated = False
+    if _auth_mode == "pam":
+        authenticated = authenticate_pam(username, password)
+    elif _auth_mode == "password":
+        authenticated = password == _auth_password
+    else:
+        # auth == "none" — shouldn't reach here but allow through
+        authenticated = True
+
+    if not authenticated:
+        return JSONResponse({"ok": False, "detail": "Invalid credentials"}, status_code=401)
+
+    # Set signed session cookie
+    cookie_value = create_session_cookie(_auth_secret)
+    response = JSONResponse({"ok": True})
+    max_age = _auth_ttl if _auth_ttl > 0 else None
+    response.set_cookie(
+        key="dashboard_session",
+        value=cookie_value,
+        httponly=True,
+        samesite="lax",
+        max_age=max_age,
+        path="/",
+    )
+    return response
+
+
+@app.get("/auth/logout")
+async def auth_logout() -> RedirectResponse:
+    """Clear session cookie and redirect to login."""
+    response = RedirectResponse(url="/login", status_code=307)
+    response.delete_cookie(key="dashboard_session", path="/")
+    return response
+
+
+@app.get("/auth/mode")
+async def auth_mode() -> dict:
+    """Return the current auth mode for frontend use."""
+    return {"mode": _auth_mode}
+
+
+# ---------------------------------------------------------------------------
+# Static file serving — MUST come after all API routes (first-match-wins)
+# ---------------------------------------------------------------------------
+
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+
+# ---------------------------------------------------------------------------
+# Factory for CLI use
+# ---------------------------------------------------------------------------
+
+
+def create_app(
+    projects_dir: Path | None = None,
+    refresh_interval: float = 15.0,
+    auth: str = "none",
+    session_ttl: int = 604800,
+) -> FastAPI:
+    """Configure the module-level app for the given projects_dir.
+
+    Returns the module-level ``app`` after setting globals used by routes.
+    This mirrors the Flask create_app() pattern for backward compatibility
+    with cli.py, while being a thin wrapper around the module-level FastAPI app.
+
+    When *auth* is not "none", resolves the auth mode and attaches
+    :class:`~amplifier_recipe_dashboard.auth.AuthMiddleware`.
+    """
+    global _projects_dir, _refresh_interval
+    global _auth_mode, _auth_password, _auth_secret, _auth_ttl
+
+    _projects_dir = projects_dir
+    _refresh_interval = refresh_interval
+
+    # --- Auth setup ---
+    if auth != "none":
+        from .auth import AuthMiddleware, load_or_create_secret, resolve_auth_mode
+
+        mode, password = resolve_auth_mode(auth)
+        secret = load_or_create_secret()
+
+        _auth_mode = mode
+        _auth_password = password
+        _auth_secret = secret
+        _auth_ttl = session_ttl
+
+        if mode != "none":
+            app.add_middleware(
+                AuthMiddleware,
+                auth_mode=mode,
+                secret=secret,
+                ttl_seconds=session_ttl,
+                password=password,
+            )
+            logger.info("Auth middleware enabled: mode=%s, ttl=%ds", mode, session_ttl)
+    else:
+        _auth_mode = "none"
+        _auth_password = ""
+        _auth_secret = ""
+        _auth_ttl = session_ttl
 
     return app

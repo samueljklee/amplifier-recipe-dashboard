@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="dark light">
     <title>Recipe Dashboard</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/style.css">
     <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/lib/viz-standalone.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 </head>
@@ -27,6 +28,6 @@
         <button id="refresh-btn" onclick="dashboard.refresh()">Refresh</button>
     </header>
     <main id="app"></main>
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script src="/static/app.js"></script>
 </body>
 </html>
