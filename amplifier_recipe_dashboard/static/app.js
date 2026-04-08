@@ -15,6 +15,7 @@ class RecipeDashboard {
         this._expandedValues = new Set();
         this._filter = '';
         this._statusFilter = 'active';
+        this._viewMode = localStorage.getItem('rd-view-mode') || 'tree';  // 'tree' or 'flat'
         this._projectFilter = '';
         this._timeFilter = '7d';
         this._vizInstance = null;
@@ -160,6 +161,12 @@ class RecipeDashboard {
         this._showDiscovery();
     }
 
+    setViewMode(mode) {
+        this._viewMode = mode;
+        localStorage.setItem('rd-view-mode', mode);
+        this._showDiscovery();
+    }
+
     toggleGroup(project) {
         if (this._expandedGroups.has(project)) {
             this._expandedGroups.delete(project);
@@ -189,34 +196,41 @@ class RecipeDashboard {
         }
 
         const allSessions = data.sessions || [];
+        this._lastSessionList = allSessions;  // Cache for child session lookup
 
-        // Count by status for tabs
+        const isTree = this._viewMode === 'tree';
+        const rootSessions = isTree
+            ? allSessions.filter(s => !s.parent_id)
+            : allSessions;
+
+        // Count by status for tabs (root sessions only in tree mode)
         // Active = running + idle, Waiting = waiting, Stalled = stalled + failed + cancelled
-        const counts = { all: allSessions.length, active: 0, waiting: 0, done: 0, stalled: 0 };
-        for (const s of allSessions) {
+        const countSource = isTree ? rootSessions : allSessions;
+        const counts = { all: countSource.length, active: 0, waiting: 0, done: 0, stalled: 0 };
+        for (const s of countSource) {
             if (s.status === 'running' || s.status === 'idle') counts.active++;
             else if (s.status === 'waiting') counts.waiting++;
             else if (s.status === 'done') counts.done++;
             else if (s.status === 'stalled' || s.status === 'failed' || s.status === 'cancelled') counts.stalled++;
         }
 
-        // Apply status filter
+        // Apply status filter (against root sessions only in tree mode)
         let sessions;
         switch (this._statusFilter) {
             case 'active':
-                sessions = allSessions.filter(s => s.status === 'running' || s.status === 'idle');
+                sessions = rootSessions.filter(s => s.status === 'running' || s.status === 'idle');
                 break;
             case 'waiting':
-                sessions = allSessions.filter(s => s.status === 'waiting');
+                sessions = rootSessions.filter(s => s.status === 'waiting');
                 break;
             case 'done':
-                sessions = allSessions.filter(s => s.status === 'done');
+                sessions = rootSessions.filter(s => s.status === 'done');
                 break;
             case 'stalled':
-                sessions = allSessions.filter(s => s.status === 'stalled' || s.status === 'failed' || s.status === 'cancelled');
+                sessions = rootSessions.filter(s => s.status === 'stalled' || s.status === 'failed' || s.status === 'cancelled');
                 break;
             default:
-                sessions = allSessions;
+                sessions = rootSessions;
         }
 
         // Group by project
@@ -258,6 +272,10 @@ class RecipeDashboard {
         html += this._renderTab('stalled', `Stalled (${counts.stalled})`, this._statusFilter === 'stalled');
         html += this._renderTab('done', `Done (${counts.done})`, this._statusFilter === 'done');
         html += this._renderTab('all', `All (${counts.all})`, this._statusFilter === 'all');
+        html += `<span class="view-toggle">`;
+        html += `<button class="view-toggle-btn ${isTree ? 'active' : ''}" onclick="dashboard.setViewMode('tree')" title="Tree view">\u25e4 Tree</button>`;
+        html += `<button class="view-toggle-btn ${!isTree ? 'active' : ''}" onclick="dashboard.setViewMode('flat')" title="Flat view">\u2630 Flat</button>`;
+        html += `</span>`;
         html += '</div>';
 
         // Filter input
@@ -270,13 +288,27 @@ class RecipeDashboard {
             return;
         }
 
+        // Build child ID set for tree mode (used to skip/nest child sessions)
+        const childIdSet = new Set();
+        if (isTree) {
+            for (const s of allSessions) {
+                if (s.parent_id) childIdSet.add(s.session_id);
+            }
+        }
+
         // Flat list for active/waiting/stalled with few sessions
         const useFlat = (this._statusFilter === 'active' || this._statusFilter === 'waiting' || this._statusFilter === 'stalled') && sessions.length <= 20;
 
         if (useFlat) {
             const filtered = this._applyTextFilter(sessions);
             html += '<div class="session-list">';
-            for (const s of filtered) html += this._renderSessionRow(s, true);
+            for (const s of filtered) {
+                if (isTree && childIdSet.has(s.session_id)) continue;
+                html += this._renderSessionRow(s, true);
+                if (isTree) {
+                    html += this._renderChildTree(s, allSessions, childIdSet);
+                }
+            }
             html += '</div>';
             this._el.innerHTML = html;
             return;
@@ -302,7 +334,13 @@ class RecipeDashboard {
 
             if (isExpanded) {
                 html += '<div class="session-list">';
-                for (const s of filtered) html += this._renderSessionRow(s);
+                for (const s of filtered) {
+                    if (isTree && childIdSet.has(s.session_id)) continue;
+                    html += this._renderSessionRow(s);
+                    if (isTree) {
+                        html += this._renderChildTree(s, allSessions, childIdSet);
+                    }
+                }
                 html += '</div>';
             }
         }
@@ -320,7 +358,7 @@ class RecipeDashboard {
             (project || '').toLowerCase().includes(this._filter));
     }
 
-    _renderSessionRow(s, showProject = false) {
+    _renderSessionRow(s, showProject = false, isChild = false) {
         const elapsed = this._timeAgo(s.started);
         const stepsDone = (s.completed_steps || []).length;
         const stepsTotal = s.total_steps || stepsDone;
@@ -334,7 +372,7 @@ class RecipeDashboard {
             : (planFile ? `<span class="row-subtitle">${this._esc(planFile)}</span>` : '');
 
         return `
-        <div class="session-row ${showProject ? 'with-subtitle' : ''}" tabindex="0" role="button"
+        <div class="session-row ${showProject ? 'with-subtitle' : ''} ${isChild ? 'child-row' : ''}" tabindex="0" role="button"
              title="Session: ${s.session_id}"
              onclick="dashboard.navigateTo('${s.session_id}')"
              onkeydown="event.key==='Enter'&&dashboard.navigateTo('${s.session_id}')">
@@ -357,6 +395,90 @@ class RecipeDashboard {
     _renderTab(value, label, isActive) {
         const cls = isActive ? 'filter-tab active' : 'filter-tab';
         return `<button class="${cls}" onclick="dashboard.setStatusFilter('${value}')">${label}</button>`;
+    }
+
+    /**
+     * Toggle a tree node open/closed in the discovery view and re-render.
+     * Simpler than toggleSection — no DOM manipulation needed, always re-renders.
+     */
+    toggleTreeNode(treeKey) {
+        if (this._openedSections.has(treeKey)) {
+            this._openedSections.delete(treeKey);
+            this._collapsedSections.add(treeKey);
+        } else {
+            this._collapsedSections.delete(treeKey);
+            this._openedSections.add(treeKey);
+        }
+        this._showDiscovery();
+    }
+
+    /**
+     * Render child sessions as an indented tree under a parent in the discovery list.
+     * Auto-expands if parent is active, collapses if parent is terminal.
+     * @param {object} parentSession  - the parent session object
+     * @param {Array}  allSessions    - full unfiltered session list for lookup
+     * @param {Set}    childIdSet     - set of all session IDs that have a parent
+     * @param {number} depth          - current nesting depth (0 = top-level children)
+     */
+    _renderChildTree(parentSession, allSessions, childIdSet, depth = 0) {
+        const children = (parentSession.child_session_ids || [])
+            .map(id => allSessions.find(s => s.session_id === id))
+            .filter(Boolean);
+        if (children.length === 0) return '';
+
+        const isActive = ['running', 'idle', 'waiting'].includes(parentSession.status);
+        const treeKey = `tree-${parentSession.session_id}`;
+
+        // Auto-expand active parents, collapse terminal ones. User override sticks.
+        let isExpanded;
+        if (this._openedSections.has(treeKey)) {
+            isExpanded = true;
+        } else if (this._collapsedSections.has(treeKey)) {
+            isExpanded = false;
+        } else {
+            isExpanded = isActive;
+        }
+
+        if (!isExpanded) {
+            const summary = `${children.length} sub-recipe${children.length > 1 ? 's' : ''}`;
+            return `<div class="child-tree-collapsed" style="margin-left:${24 + depth * 20}px;"
+                         onclick="dashboard.toggleTreeNode('${treeKey}')"
+                         role="button" tabindex="0"
+                         onkeydown="event.key==='Enter'&&dashboard.toggleTreeNode('${treeKey}')">
+                <span class="chevron">\u25b8</span> ${summary}
+            </div>`;
+        }
+
+        let html = '';
+        for (const child of children) {
+            const stepsDone = (child.completed_steps || []).length;
+            const stepsTotal = child.total_steps || stepsDone;
+            const pct = stepsTotal > 0 ? Math.round((stepsDone / stepsTotal) * 100) : 0;
+            const elapsed = this._timeAgo(child.started);
+
+            const sessionIdShort = child.session_id.slice(0, 8);
+            html += `<div class="session-row child-row" style="margin-left:${24 + depth * 20}px;"
+                          tabindex="0" role="button"
+                          title="Session: ${child.session_id}"
+                          onclick="dashboard.navigateTo('${child.session_id}')"
+                          onkeydown="event.key==='Enter'&&dashboard.navigateTo('${child.session_id}')">
+                <span class="status ${child.status}">${child.status}</span>
+                <span class="recipe-info">
+                    <span class="recipe-name">${this._esc(child.recipe_name)}</span>
+                </span>
+                <span class="progress-cell">
+                    <span class="mini-progress"><span class="mini-progress-fill" style="width:${pct}%"></span></span>
+                    <span class="progress-text">${stepsDone}/${stepsTotal}</span>
+                </span>
+                <span class="time">
+                    ${elapsed}
+                    <span class="session-id-hint">${sessionIdShort}</span>
+                </span>
+            </div>`;
+            // Recurse for grandchildren
+            html += this._renderChildTree(child, allSessions, childIdSet, depth + 1);
+        }
+        return html;
     }
 
     // -- Detail View ------------------------------------------------------
@@ -445,7 +567,6 @@ class RecipeDashboard {
         const outcomeHtml = this._renderOutcomeTabs(session);
         const completedTasksHtml = this._renderCompletedTasks(session);
         const timelineHtml = this._renderApprovalTimeline(session);
-
         // Status-adaptive section layout with collapse defaults
         const isTerminal = (status === 'done' || status === 'cancelled' || status === 'failed');
         const isWaiting = (status === 'waiting');
@@ -647,6 +768,17 @@ class RecipeDashboard {
             if (!step.completed && !step.skipped) { activeId = step.id; break; }
         }
 
+        // Build child session lookup for inline sub-recipe display
+        const childIds = session.child_session_ids || [];
+        const allSessions = this._lastSessionList || [];
+        const byId = {};
+        for (const s of allSessions) byId[s.session_id] = s;
+        const childSessions = childIds
+            .map(id => byId[id])
+            .filter(Boolean)
+            .sort((a, b) => (a.started || '').localeCompare(b.started || ''));
+        const recipeStepQueue = [...childSessions];
+
         let html = '<div class="steps-detail">';
         for (let i = 0; i < steps.length; i++) {
             const step = steps[i];
@@ -655,12 +787,15 @@ class RecipeDashboard {
             else if (step.skipped) { cls = 'skipped'; icon = '\u21b7'; }
             else if (step.id === activeId) { cls = 'active'; icon = '\u2192'; }
 
+            const isRecipeStep = (step.type === 'recipe');
+            const childSession = isRecipeStep ? recipeStepQueue.shift() : null;
+
             const typeLabel = step.type || '';
             const outputKey = step.output_key ? `\u2192 ${step.output_key}` : '';
             const hasDetail = step.completed && (step.output_value || step.description);
             const hasVars = step.resolved_variables && Object.keys(step.resolved_variables).length > 0;
             const hasCondition = !!step.condition;
-            const showPanel = hasDetail || hasVars || (step.skipped && hasCondition);
+            const showPanel = hasDetail || hasVars || (step.skipped && hasCondition) || isRecipeStep;
             const panelId = `step-panel-${i}`;
 
             html += `<div class="step-row ${cls} ${showPanel ? 'clickable' : ''}"
@@ -669,7 +804,16 @@ class RecipeDashboard {
             html += `<div class="step-info">`;
             html += `<span class="step-name">${this._esc(step.id)}</span>`;
             html += `<span class="step-type">${this._esc(typeLabel)}</span>`;
-            if (outputKey) html += `<span class="step-output-key">${this._esc(outputKey)}</span>`;
+            if (childSession) {
+                const cStatus = childSession.status || 'unknown';
+                const cStepsDone = (childSession.completed_steps || []).length;
+                const cStepsTotal = childSession.total_steps || cStepsDone;
+                html += `<span class="step-sub-recipe-badge">`;
+                html += `<span class="status ${cStatus}">${cStatus}</span>`;
+                html += ` ${this._esc(childSession.recipe_name)} ${cStepsDone}/${cStepsTotal}`;
+                html += `</span>`;
+            }
+            if (outputKey && !childSession) html += `<span class="step-output-key">${this._esc(outputKey)}</span>`;
             if (step.skipped) html += `<span class="step-skipped-badge">skipped</span>`;
             else if (step.condition && !step.completed) html += `<span class="step-condition-badge">conditional</span>`;
             if (showPanel) {
@@ -682,6 +826,9 @@ class RecipeDashboard {
             if (showPanel) {
                 const isStepOpen = this._expandedSteps.has(panelId);
                 html += `<div id="${panelId}" class="step-detail-panel" style="display:${isStepOpen ? 'block' : 'none'};">`;
+                if (childSession) {
+                    html += this._renderInlineSubRecipe(childSession, 0);
+                }
                 if (step.skipped && step.condition) {
                     const highlightedCond = this._highlightTemplateVars(step.condition);
                     html += `<div class="step-detail-row"><span class="step-detail-label">Skipped — Condition was false</span><div class="step-detail-value"><code class="condition-code">${highlightedCond}</code></div></div>`;
@@ -714,6 +861,64 @@ class RecipeDashboard {
             }
         }
         html += '</div>';
+        return html;
+    }
+
+    _renderInlineSubRecipe(childSession, depth) {
+        const allSessions = this._lastSessionList || [];
+        const byId = {};
+        for (const s of allSessions) byId[s.session_id] = s;
+
+        const cStatus = childSession.status || 'unknown';
+        const cSteps = childSession.recipe_steps || [];
+        const completedSet = new Set(childSession.completed_steps || []);
+        const cStepsDone = completedSet.size;
+        const cStepsTotal = childSession.total_steps || cStepsDone;
+        const elapsed = this._timeAgo(childSession.started);
+        const grandchildIds = childSession.child_session_ids || [];
+        const grandchildren = grandchildIds
+            .map(id => byId[id]).filter(Boolean)
+            .sort((a, b) => (a.started || '').localeCompare(b.started || ''));
+        const gcQueue = [...grandchildren];
+
+        let html = `<div class="inline-sub-recipe" style="margin-left:${depth * 16}px;">`;
+        html += `<div class="inline-sub-recipe-header"
+                      tabindex="0" role="button"
+                      onclick="event.stopPropagation(); dashboard.navigateTo('${childSession.session_id}')"
+                      onkeydown="event.key==='Enter'&&(event.stopPropagation(), dashboard.navigateTo('${childSession.session_id}'))">`;
+        html += `<span class="status ${cStatus}">${cStatus}</span>`;
+        html += `<span class="inline-sub-recipe-name">${this._esc(childSession.recipe_name)}</span>`;
+        html += `<span class="progress-cell">`;
+        html += `<span class="mini-progress"><span class="mini-progress-fill" style="width:${cStepsTotal > 0 ? Math.round((cStepsDone / cStepsTotal) * 100) : 0}%"></span></span>`;
+        html += `<span class="progress-text">${cStepsDone}/${cStepsTotal}</span>`;
+        html += `</span>`;
+        html += `<span class="time">${elapsed}</span>`;
+        html += `</div>`;
+
+        if (cSteps.length > 0) {
+            html += `<div class="inline-sub-recipe-steps">`;
+            for (const cs of cSteps) {
+                const done = completedSet.has(cs.id);
+                const isSubRecipe = (cs.type === 'recipe');
+                const gcSession = isSubRecipe ? gcQueue.shift() : null;
+                const sIcon = done ? '\u2713' : (cs.skipped ? '\u21b7' : '\u2013');
+                const sCls = done ? 'completed' : (cs.skipped ? 'skipped' : '');
+                html += `<div class="inline-step ${sCls}">`;
+                html += `<span class="step-icon">${sIcon}</span>`;
+                html += `<span class="step-name">${this._esc(cs.id)}</span>`;
+                html += `<span class="step-type">${this._esc(cs.type || '')}</span>`;
+                if (gcSession) {
+                    const gcStatus = gcSession.status || 'unknown';
+                    html += ` <span class="step-sub-recipe-badge"><span class="status ${gcStatus}">${gcStatus}</span> ${this._esc(gcSession.recipe_name)}</span>`;
+                }
+                html += `</div>`;
+                if (gcSession) {
+                    html += this._renderInlineSubRecipe(gcSession, depth + 1);
+                }
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
         return html;
     }
 

@@ -1,0 +1,14 @@
+name: test-grandchild
+version: "1.0.0"
+description: "Grandchild recipe for testing nested hierarchy"
+
+steps:
+  - id: grandchild-step-1
+    type: bash
+    command: echo "Grandchild recipe running"
+    output: grandchild_result_1
+
+  - id: grandchild-step-2
+    type: bash
+    command: echo "Grandchild recipe done"
+    output: grandchild_result_2

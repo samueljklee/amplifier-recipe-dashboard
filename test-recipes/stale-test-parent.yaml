@@ -1,0 +1,24 @@
+name: stale-threshold-test
+version: "1.0.0"
+description: "Tests that parent stays RUNNING when children are active past the 30-min stale threshold"
+
+steps:
+  - id: parent-init
+    type: bash
+    command: echo "Parent init at $(date)"
+    output: parent_init
+
+  - id: invoke-long-child-a
+    type: recipe
+    recipe: ./stale-test-child.yaml
+    output: long_child_a
+
+  - id: invoke-long-child-b
+    type: recipe
+    recipe: ./stale-test-child.yaml
+    output: long_child_b
+
+  - id: parent-done
+    type: bash
+    command: echo "Parent done at $(date)"
+    output: parent_done

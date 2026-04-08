@@ -211,9 +211,8 @@ def _build_step_list(s: RecipeSession) -> list[dict]:
 
 def _session_to_dict(s: RecipeSession) -> dict:
     """Convert RecipeSession to API-friendly dict."""
-    # Extract parent session info from context if available
-    session_ctx = s.context.get("session", {})
-    parent_id = session_ctx.get("parent_id", "") if isinstance(session_ctx, dict) else ""
+    # Parent session ID (read from dataclass, already resolved by scanner)
+    parent_id = s.parent_session_id
 
     # Extract rich context fields for the frontend
     recipe_ctx = s.context.get("recipe", {})
@@ -237,6 +236,7 @@ def _session_to_dict(s: RecipeSession) -> dict:
         "plan_path": s.plan_path,
         "working_dir": s.working_dir,
         "parent_id": parent_id,
+        "child_session_ids": s.child_session_ids,
         "session_dir": str(s.session_dir),
         "context_summary": _summarize_context(s.context),
         # Phase 1: status-related fields
