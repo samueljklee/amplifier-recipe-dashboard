@@ -1510,10 +1510,9 @@ main {
     padding-left: 12px;
 }
 .inline-sub-recipe-header {
-    display: grid;
-    grid-template-columns: 80px 1fr 120px 100px;
-    gap: 8px;
+    display: flex;
     align-items: center;
+    gap: 8px;
     padding: 8px 12px;
     background: var(--bg-surface);
     border-radius: var(--radius);
@@ -1526,9 +1525,12 @@ main {
 .inline-sub-recipe-header .time {
     color: var(--text-muted);
     font-size: 12px;
-    text-align: right;
+}
+.inline-sub-recipe-header .progress-cell {
+    margin-left: auto;
 }
 .inline-sub-recipe-name {
+    flex: 1;
     font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
@@ -1542,9 +1544,10 @@ main {
     display: flex;
     gap: 8px;
     align-items: center;
-    padding: 5px 8px;
+    padding: 5px 12px;
     font-size: 13px;
     color: var(--text-muted);
+    border-radius: var(--radius);
 }
 .inline-step.completed { color: var(--text); }
 .inline-step .step-icon { width: 16px; text-align: center; font-size: 11px; font-weight: 600; }

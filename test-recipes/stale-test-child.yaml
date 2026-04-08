@@ -1,0 +1,24 @@
+name: stale-test-child
+version: "1.0.0"
+description: "Child recipe that runs ~12 minutes to test stale threshold"
+
+steps:
+  - id: child-phase-1
+    type: bash
+    command: echo "Phase 1 starting at $(date)" && sleep 180 && echo "Phase 1 done at $(date)"
+    output: phase_1
+
+  - id: child-phase-2
+    type: bash
+    command: echo "Phase 2 starting at $(date)" && sleep 180 && echo "Phase 2 done at $(date)"
+    output: phase_2
+
+  - id: child-phase-3
+    type: bash
+    command: echo "Phase 3 starting at $(date)" && sleep 180 && echo "Phase 3 done at $(date)"
+    output: phase_3
+
+  - id: child-phase-4
+    type: bash
+    command: echo "Phase 4 starting at $(date)" && sleep 180 && echo "Phase 4 done at $(date)"
+    output: phase_4
