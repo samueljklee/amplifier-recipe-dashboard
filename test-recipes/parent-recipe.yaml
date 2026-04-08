@@ -1,0 +1,29 @@
+name: test-parent-child-hierarchy
+version: "1.0.0"
+description: "Test recipe to validate parent→child→grandchild session hierarchy in the dashboard"
+
+steps:
+  - id: parent-step-1
+    type: bash
+    command: echo "Parent recipe starting"
+    output: parent_start
+
+  - id: invoke-child-a
+    type: recipe
+    recipe: ./child-recipe.yaml
+    output: child_a_output
+
+  - id: invoke-nested-child
+    type: recipe
+    recipe: ./nested-child-recipe.yaml
+    output: nested_child_output
+
+  - id: invoke-child-b
+    type: recipe
+    recipe: ./child-recipe.yaml
+    output: child_b_output
+
+  - id: parent-final
+    type: bash
+    command: echo "Parent recipe complete - all sub-recipes finished"
+    output: parent_result

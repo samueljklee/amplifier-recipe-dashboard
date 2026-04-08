@@ -109,6 +109,7 @@ main {
 /* Filter bar with tabs */
 .filter-bar {
     display: flex;
+    align-items: center;
     gap: 4px;
     margin-bottom: 12px;
 }
@@ -1500,6 +1501,113 @@ main {
     color: var(--text-muted);
     font-size: 12px;
     text-align: right;
+}
+
+/* --- Inline Sub-Recipe (merged into Recipe Steps) --- */
+.inline-sub-recipe {
+    border-left: 3px solid var(--border);
+    margin: 4px 0 4px 20px;
+    padding-left: 12px;
+}
+.inline-sub-recipe-header {
+    display: grid;
+    grid-template-columns: 80px 1fr 120px 80px;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 8px;
+    background: var(--bg-surface);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.inline-sub-recipe-header:hover {
+    background: var(--bg-hover);
+}
+.inline-sub-recipe-name {
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.inline-sub-recipe-steps {
+    margin: 2px 0 2px 8px;
+}
+.inline-step {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 2px 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.inline-step.completed { color: var(--text); }
+.inline-step .step-icon { width: 16px; text-align: center; }
+.inline-step .step-name { font-weight: 500; }
+.inline-step .step-type { color: var(--text-muted); font-size: 11px; }
+
+.step-sub-recipe-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    margin-left: 8px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--bg-hover);
+}
+
+/* --- View Toggle (Tree/Flat) --- */
+.view-toggle {
+    display: inline-flex;
+    gap: 0;
+    margin-left: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+.view-toggle-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.view-toggle-btn.active {
+    background: var(--bg-hover);
+    color: var(--text);
+    font-weight: 600;
+}
+.view-toggle-btn:hover:not(.active) {
+    background: var(--bg-surface);
+}
+
+/* --- Child Tree Rows (discovery view tree mode) --- */
+.session-row.child-row {
+    border-left: 2px solid var(--border);
+    background: transparent;
+    font-size: 13px;
+}
+.session-row.child-row:hover,
+.session-row.child-row:focus-visible {
+    background: var(--bg-hover);
+}
+.child-tree-collapsed {
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-left: 2px solid var(--border);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    outline: none;
+}
+.child-tree-collapsed:hover {
+    color: var(--text);
+}
+.child-tree-collapsed:focus-visible {
+    outline: 1px solid var(--blue);
+    outline-offset: -1px;
 }
 
 /* Reduced motion: kill pulse on approval timeline too */

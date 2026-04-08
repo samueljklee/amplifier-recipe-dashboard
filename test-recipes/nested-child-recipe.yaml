@@ -1,0 +1,19 @@
+name: test-nested-child
+version: "1.0.0"
+description: "Mid-level recipe that itself has a sub-recipe (3-level nesting test)"
+
+steps:
+  - id: nested-step-1
+    type: bash
+    command: echo "Nested child recipe - step 1"
+    output: nested_result_1
+
+  - id: invoke-grandchild
+    type: recipe
+    recipe: ./grandchild-recipe.yaml
+    output: grandchild_output
+
+  - id: nested-step-3
+    type: bash
+    command: echo "Nested child recipe - step 3 (after grandchild)"
+    output: nested_result_3

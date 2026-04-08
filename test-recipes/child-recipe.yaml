@@ -1,0 +1,14 @@
+name: test-child
+version: "1.0.0"
+description: "Child recipe for testing parent-child hierarchy"
+
+steps:
+  - id: child-step-1
+    type: bash
+    command: echo "Child recipe running - step 1"
+    output: child_result_1
+
+  - id: child-step-2
+    type: bash
+    command: echo "Child recipe done - step 2"
+    output: child_result_2
