@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 # Default base path for recipe sessions
 DEFAULT_PROJECTS_DIR = Path(os.path.expanduser("~/.amplifier/projects"))
+RUNNING_AGE_SECONDS = 300
+IDLE_AGE_SECONDS = 1800
+RECENT_ACTIVITY_LOOKBACK_SECONDS = IDLE_AGE_SECONDS
+MAX_STEP_DURATION_SECONDS = 3600
 
 
 @dataclass
@@ -56,6 +60,7 @@ class RecipeSession:
     recipe_steps: list[RecipeStep] = field(default_factory=list)
     session_dir: Path = field(default_factory=lambda: Path("."))
     state_mtime: float = 0.0
+    activity_mtime: float = 0.0  # freshest agent session activity (events.jsonl)
     status: str = "unknown"  # running, waiting, idle, done, stalled, cancelled, failed
     cancellation_status: str = ""
     pending_approval_stage: str = ""
@@ -128,16 +133,122 @@ def classify_status(session: RecipeSession) -> str:
     if session.pending_approval_stage:
         return "waiting"
 
-    # Time-based classification
+    # Time-based classification using freshest activity signal.
+    # activity_mtime tracks agent session events.jsonl writes which happen
+    # continuously during LLM calls, so it catches steps that are genuinely
+    # running but haven't updated state.json recently.
     now = datetime.now(timezone.utc).timestamp()
-    age_seconds = now - session.state_mtime
+    freshest = max(session.state_mtime, session.activity_mtime)
+    age_seconds = now - freshest
 
-    if age_seconds < 300:  # 5 minutes
+    if age_seconds < RUNNING_AGE_SECONDS:  # 5 minutes
         return "running"
-    elif age_seconds < 1800:  # 30 minutes
+    elif age_seconds < IDLE_AGE_SECONDS:  # 30 minutes
         return "idle"
     else:
         return "stalled"
+
+
+def _agent_sessions_dir(session: RecipeSession, projects_dir: Path) -> Path | None:
+    """Derive the agent sessions directory for a recipe session.
+
+    Amplifier maps project working-directory paths to project slugs by
+    replacing ``/`` with ``-``, e.g.::
+
+        /Users/sam/repo/my-project  →  -Users-sam-repo-my-project
+
+    Agent sessions live at ``<projects_dir>/<slug>/sessions/``.
+
+    The slug MUST be derived from ``project_path`` (which includes the
+    leading ``-`` from the root ``/``).  The ``project_slug`` field on the
+    session comes from the *recipe-sessions* directory tree which omits the
+    leading dash and therefore does not match the agent-sessions directory.
+    We fall back to ``project_slug`` only when ``project_path`` is absent
+    (older state files).
+    """
+    if session.project_path:
+        slug = session.project_path.replace("/", "-")
+    elif session.project_slug:
+        slug = session.project_slug
+    else:
+        return None
+    sessions_dir = projects_dir / slug / "sessions"
+    return sessions_dir if sessions_dir.is_dir() else None
+
+
+def _freshest_agent_activity(sessions_dir: Path | None, cutoff: float) -> float:
+    """Return the most recent ``events.jsonl`` mtime under *sessions_dir*.
+
+    The freshness signal comes from ``events.jsonl`` itself, not the parent
+    session directory. A directory mtime only changes when entries are created,
+    removed, or renamed, so ongoing writes to ``events.jsonl`` do not refresh
+    it. Returns ``0.0`` when no recent activity is found.
+    """
+    if sessions_dir is None:
+        return 0.0
+
+    best = 0.0
+    try:
+        with os.scandir(sessions_dir) as entries:
+            for entry in entries:
+                if not entry.is_dir():
+                    continue
+                events_path = Path(entry.path) / "events.jsonl"
+                try:
+                    mtime = events_path.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime < cutoff:
+                    continue
+                if mtime > best:
+                    best = mtime
+    except OSError:
+        pass
+    return best
+
+
+def _enrich_activity_mtime(sessions: list[RecipeSession], projects_dir: Path) -> None:
+    """Set ``activity_mtime`` on sessions from agent events.jsonl files.
+
+    Scans the project-level ``sessions/`` directory (where Amplifier agent
+    sessions write ``events.jsonl``) and caches the result per project so
+    the filesystem scan happens at most once per project per poll cycle.
+
+    A plausibility guard prevents unrelated sessions (e.g. an interactive
+    Amplifier session) from boosting old recipe sessions: agent activity is
+    only attributed to a recipe session when the gap between the activity
+    and the recipe's last ``state.json`` write is within
+    ``MAX_STEP_DURATION_SECONDS``.  This stops a 5-day-old recipe from appearing
+    active just because a new session started in the same project directory.
+    """
+    now_ts = datetime.now(timezone.utc).timestamp()
+    cutoff = now_ts - RECENT_ACTIVITY_LOOKBACK_SECONDS
+
+    # Cache per project_path so we scan each project's sessions dir only once.
+    project_activity: dict[str, float] = {}
+
+    for s in sessions:
+        key = s.project_path or s.project_slug
+        if not key:
+            continue
+        if key not in project_activity:
+            sdir = _agent_sessions_dir(s, projects_dir)
+            project_activity[key] = _freshest_agent_activity(sdir, cutoff)
+
+        activity = project_activity[key]
+        if activity <= s.activity_mtime:
+            continue
+
+        # Plausibility guard: only attribute this activity to the recipe
+        # session if it falls within a reasonable window of the last
+        # state.json write.  A gap of hours/days means the activity is
+        # from an unrelated session that happens to share the same project.
+        if activity > s.state_mtime and (activity - s.state_mtime) > MAX_STEP_DURATION_SECONDS:
+            continue
+
+        s.activity_mtime = activity
+        # Reclassify — the freshest signal may change idle → running
+        s.status = classify_status(s)
 
 
 def _parse_recipe_yaml(recipe_path: Path) -> list[RecipeStep]:
@@ -305,12 +416,13 @@ def _link_parent_child(sessions: list[RecipeSession]) -> None:
 
 def scan_all_sessions(projects_dir: Path | None = None) -> list[RecipeSession]:
     """Scan all recipe sessions across all projects."""
-    base = (projects_dir or DEFAULT_PROJECTS_DIR) / "{project}" / "recipe-sessions"
-    if not base.is_dir():
+    base_dir = projects_dir or DEFAULT_PROJECTS_DIR
+    recipe_base = base_dir / "{project}" / "recipe-sessions"
+    if not recipe_base.is_dir():
         return []
 
     sessions: list[RecipeSession] = []
-    for slug_dir in sorted(base.iterdir()):
+    for slug_dir in sorted(recipe_base.iterdir()):
         inner = slug_dir / "recipe-sessions"
         if not inner.is_dir():
             continue
@@ -318,6 +430,12 @@ def scan_all_sessions(projects_dir: Path | None = None) -> list[RecipeSession]:
             session = load_session(session_dir, project_slug=slug_dir.name)
             if session:
                 sessions.append(session)
+
+    # Enrich with agent session activity before linking/propagation.
+    # This checks events.jsonl in the project's sessions/ directory —
+    # agent sessions write events.jsonl continuously during LLM calls,
+    # which is a much fresher signal than recipe state.json (step-level).
+    _enrich_activity_mtime(sessions, base_dir)
 
     # Link parent↔child and propagate status
     _link_parent_child(sessions)
