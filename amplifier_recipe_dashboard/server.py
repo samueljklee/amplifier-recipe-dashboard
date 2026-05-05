@@ -69,7 +69,7 @@ async def _poll_loop() -> None:
     while True:
         try:
             async with _sessions_lock:
-                _refresh_sessions()
+                await asyncio.to_thread(_refresh_sessions)
         except Exception:
             logger.exception("Error refreshing sessions")
         await asyncio.sleep(_refresh_interval)
@@ -425,7 +425,7 @@ async def api_session_tasks(session_id: str) -> dict:
     if not plan_path:
         return {"tasks": [], "info": "This recipe does not use a plan file."}
 
-    tasks = parse_plan(plan_path)
+    tasks = await asyncio.to_thread(parse_plan, plan_path)
     if not tasks:
         return {"error": f"No tasks found in {plan_path}", "tasks": []}
 
@@ -433,7 +433,7 @@ async def api_session_tasks(session_id: str) -> dict:
     working_dir = session.working_dir
     commits = []
     if working_dir:
-        commits = get_commits_since(working_dir, since=session.started)
+        commits = await asyncio.to_thread(get_commits_since, working_dir, since=session.started)
 
     task_commits = match_tasks_to_commits(commits, len(tasks))
 
@@ -482,7 +482,7 @@ async def api_session_tasks(session_id: str) -> dict:
 async def api_refresh() -> dict:
     """Force an immediate session rescan."""
     async with _sessions_lock:
-        _refresh_sessions()
+        await asyncio.to_thread(_refresh_sessions)
     return {"status": "refreshed", "count": len(await _get_sessions())}
 
 
