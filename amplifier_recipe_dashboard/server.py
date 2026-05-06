@@ -52,10 +52,14 @@ _HOSTNAME = socket.gethostname().split(".")[0]
 # ---------------------------------------------------------------------------
 
 
-def _refresh_sessions() -> None:
-    """Re-scan all recipe sessions from disk (sync, called from async context)."""
-    global _sessions
-    _sessions = scan_all_sessions(_projects_dir)
+def _refresh_sessions() -> list[RecipeSession]:
+    """Build a fresh session list from disk. Pure function — caller swaps state.
+
+    Heavy I/O (~10 s for thousands of sessions) — call via asyncio.to_thread,
+    then atomically swap into `_sessions` under the lock. Holding the lock
+    around the swap (not around the scan) keeps reader latency minimal.
+    """
+    return scan_all_sessions(_projects_dir)
 
 
 async def _get_sessions() -> list[RecipeSession]:
@@ -66,10 +70,12 @@ async def _get_sessions() -> list[RecipeSession]:
 
 async def _poll_loop() -> None:
     """Run session refresh every _refresh_interval seconds, catching all exceptions."""
+    global _sessions
     while True:
         try:
+            new_sessions = await asyncio.to_thread(_refresh_sessions)
             async with _sessions_lock:
-                await asyncio.to_thread(_refresh_sessions)
+                _sessions = new_sessions
         except Exception:
             logger.exception("Error refreshing sessions")
         await asyncio.sleep(_refresh_interval)
@@ -82,10 +88,10 @@ async def _poll_loop() -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
-    global _poll_task
+    global _poll_task, _sessions
 
     # Initial scan
-    _refresh_sessions()
+    _sessions = _refresh_sessions()
 
     # Start background poll loop
     _poll_task = asyncio.create_task(_poll_loop())
@@ -275,6 +281,35 @@ def _build_step_list(s: RecipeSession) -> list[dict]:
     return steps
 
 
+def _build_step_list_slim(s: RecipeSession) -> list[dict]:
+    """Slim step list for the LIST endpoint.
+
+    Inline child rendering (frontend `_renderInlineSubRecipe`) reads only
+    `id`, `type`, `completed`, `skipped` per step. Output values, resolved
+    template variables, descriptions, and conditions are detail-view-only
+    and stripped here to keep the list payload compact.
+    """
+    completed = set(s.completed_steps)
+    max_completed_idx = -1
+    for rs in s.recipe_steps:
+        if rs.id in completed:
+            max_completed_idx = max(max_completed_idx, rs.index)
+
+    steps = []
+    for rs in s.recipe_steps:
+        is_completed = rs.id in completed
+        is_skipped = not is_completed and rs.condition and rs.index < max_completed_idx
+        steps.append(
+            {
+                "id": rs.id,
+                "type": rs.step_type,
+                "completed": is_completed,
+                "skipped": is_skipped,
+            }
+        )
+    return steps
+
+
 def _session_to_dict(s: RecipeSession) -> dict:
     """Convert RecipeSession to API-friendly dict."""
     # Parent session ID (read from dataclass, already resolved by scanner)
@@ -322,6 +357,57 @@ def _session_to_dict(s: RecipeSession) -> dict:
         "approval_prep": s.context.get("approval_prep", ""),
         "completion_report": s.context.get("completion_report", ""),
         "recipe_steps": _build_step_list(s),
+    }
+
+
+def _session_to_list_dict(s: RecipeSession) -> dict:
+    """API-friendly dict for the LIST endpoint — strips heavy detail-only fields.
+
+    The list endpoint feeds the discovery view, tree counts, parent/child
+    lookup, and inline child step rendering. It does NOT need:
+    - `context_summary` (detail-view only — `_renderContextSummary`)
+    - `completed_tasks`, `execution_summary`, `final_review`,
+      `verification_results`, `approval_prep`, `completion_report`
+      (detail-view tabs only)
+    - Heavy fields inside each `recipe_steps[*]` entry (output_value,
+      resolved_variables, description, condition, output_key, index) —
+      use `_build_step_list_slim()` for a stripped step list.
+
+    Detail endpoint `/api/session/{id}` continues to return the full
+    `_session_to_dict()` payload.
+    """
+    parent_id = s.parent_session_id
+    recipe_ctx = s.context.get("recipe", {})
+    recipe_desc = recipe_ctx.get("description", "") if isinstance(recipe_ctx, dict) else ""
+    stage_ctx = s.context.get("stage", {})
+    current_stage = stage_ctx.get("name", "") if isinstance(stage_ctx, dict) else ""
+
+    return {
+        "session_id": s.session_id,
+        "recipe_name": s.recipe_name,
+        "recipe_version": s.recipe_version,
+        "started": s.started,
+        "status": s.status,
+        "project_slug": s.project_slug,
+        "project_path": s.project_path,
+        "completed_steps": s.completed_steps,
+        "completed_stages": s.completed_stages,
+        "total_steps": s.total_steps,
+        "is_staged": s.is_staged,
+        "progress": s.progress_fraction,
+        "plan_path": s.plan_path,
+        "working_dir": s.working_dir,
+        "parent_id": parent_id,
+        "child_session_ids": s.child_session_ids,
+        "session_dir": str(s.session_dir),
+        "cancellation_status": s.cancellation_status,
+        "pending_approval_stage": s.pending_approval_stage,
+        "pending_approval_prompt": s.pending_approval_prompt,
+        "approval_history": s.approval_history,
+        "stage_approvals": s.stage_approvals,
+        "recipe_description": recipe_desc,
+        "current_stage": current_stage,
+        "recipe_steps": _build_step_list_slim(s),
     }
 
 
@@ -389,7 +475,11 @@ async def api_sessions(
     status: str | None = Query(default=None),
     since: str | None = Query(default=None),
 ) -> dict:
-    """List all recipe sessions, most recent first."""
+    """List all recipe sessions, most recent first.
+
+    Returns a slim payload (no detail-view fields). For full session data,
+    use /api/session/{id}.
+    """
     sessions = await _get_sessions()
     if project:
         sessions = [s for s in sessions if project in s.project_slug]
@@ -400,7 +490,7 @@ async def api_sessions(
         since_iso = since_dt.isoformat()
         sessions = [s for s in sessions if s.started >= since_iso]
     return {
-        "sessions": [_session_to_dict(s) for s in sessions],
+        "sessions": [_session_to_list_dict(s) for s in sessions],
         "count": len(sessions),
     }
 
@@ -481,8 +571,10 @@ async def api_session_tasks(session_id: str) -> dict:
 @app.post("/api/refresh")
 async def api_refresh() -> dict:
     """Force an immediate session rescan."""
+    global _sessions
+    new_sessions = await asyncio.to_thread(_refresh_sessions)
     async with _sessions_lock:
-        await asyncio.to_thread(_refresh_sessions)
+        _sessions = new_sessions
     return {"status": "refreshed", "count": len(await _get_sessions())}
 
 
