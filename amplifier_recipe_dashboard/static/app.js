@@ -498,20 +498,38 @@ class RecipeDashboard {
     // -- Detail View ------------------------------------------------------
 
     async _showDetail(sessionId, isPoll = false) {
+        // Quick win: render a loading placeholder immediately so the click feels instant.
+        // Skip during polling to avoid flicker on the auto-refresh.
+        if (!isPoll) {
+            this._el.innerHTML = '<p class="loading">Loading session…</p>';
+        }
+
         let session, tasks;
         try {
-            const [sRes, tRes, allRes] = await Promise.all([
+            const [sRes, tRes] = await Promise.all([
                 fetch(`/api/session/${sessionId}`),
                 fetch(`/api/session/${sessionId}/tasks`),
-                fetch('/api/sessions'),
             ]);
             session = await sRes.json();
             tasks = await tRes.json();
-            const allData = await allRes.json();
-            this._lastSessionList = allData.sessions || [];
         } catch {
             this._el.innerHTML = '<p>Failed to load session</p>';
             return;
+        }
+
+        // The full session list is needed to render inline child sub-recipes.
+        // Reuse the cache populated by polling / discovery view; only fetch if absent
+        // (e.g. deep-link first load), and do it in the background so the detail view
+        // renders immediately and re-renders when child data is available.
+        if (!this._lastSessionList) {
+            this._lastSessionList = [];
+            fetch('/api/sessions').then(r => r.json()).then(d => {
+                this._lastSessionList = d.sessions || [];
+                // Re-render only if user is still viewing this session
+                if (this._currentSessionId === sessionId) {
+                    this._showDetail(sessionId, true);
+                }
+            }).catch(() => {});
         }
 
         if (session.error) {
